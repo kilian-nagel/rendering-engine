@@ -1,12 +1,7 @@
 use core::time;
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
-use std::io::{stdin, stdout, Write};
-use std::process::exit;
-use std::thread::{self, sleep};
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
+use std::thread::sleep;
 
 const DRM_IOCTL_BASE: u64 = 0x64;
 
@@ -150,51 +145,23 @@ unsafe fn ioctl<T>(fd: i32, request: u64, arg: *mut T) -> i32 { unsafe {
 }}
 
 
-fn fill_buffer_with_random_pixels(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize){
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            println!("x : {}", x);
-            println!("y : {}", y);
+fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, _frame: u32) {
+    let cx = width as i32 / 2;
+    let cy = height as i32 / 2;
+    let half: i32 = 100;
 
-            let r: u32 = rand::random::<u8>() as u32;
-            let g: u32 = rand::random::<u8>() as u32;
-            let b: u32 = rand::random::<u8>() as u32;
+    // Fresh random color each frame so the 60 ms refresh is obvious.
+    let r = rand::random::<u8>() as u32;
+    let g = rand::random::<u8>() as u32;
+    let b = rand::random::<u8>() as u32;
+    let square_color = (r << 16) | (g << 8) | b;
 
-            let cx = width as usize / 2;
-            let cy = height as usize / 2;
-            let color = if x > cx - 100 && x < cx + 100 && y > cy - 60 && y < cy + 60 {
-                0x00_FF_FF_FF
-            } else {
-                (r << 16) | (g << 8) | b
-            };
-
-            buffer[y * pitch_pixels + x] = r;
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let inside = (x - cx).abs() < half && (y - cy).abs() < half;
+            let color = if inside { square_color } else { 0x0000_0000 };
+            buffer[y as usize * pitch_pixels + x as usize] = color;
         }
-    }
-}
-
-fn register_event_handler(_event: Key, eventCallback: fn()) {
-    let stdin: std::io::Stdin = stdin();
-    let mut stdout = stdout().into_raw_mode().unwrap();
-    write!(stdout, r#"{}{}ctrl + q to exit, ctrl + h to print "Hello world!", alt + t to print "termion is cool""#, termion::cursor::Goto(1, 1), termion::clear::All)
-            .unwrap();
-    stdout.flush().unwrap();
-
-    for c in stdin.keys() {
-        write!(
-            stdout,
-            "{}{}",
-            termion::cursor::Goto(1, 1),
-            termion::clear::All
-        )
-        .unwrap();
-
-        match c.unwrap() {
-            _event => {eventCallback()},
-            _ => {}
-        };
-
-        stdout.flush().unwrap();
     }
 }
 
@@ -315,14 +282,6 @@ fn main() {
     let pitch_pixels = create.pitch as usize / 4;
 
 
-    thread::spawn(|| {
-        register_event_handler(Key::Esc, || {
-            println!("Escape has been clicked");
-            exit(1);
-        });
-    });
-
-
     // 10. Set the CRTC to the display
     let mut connector_id_copy = connector_id;
     let mut set_crtc = DrmModeCrtc {
@@ -341,21 +300,18 @@ fn main() {
     println!("width : {}", width);
 
 
-    // let ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) };
-    // if ret != 0 {
-    //     eprintln!("SETCRTC failed (ret={}) — try running as root or with CAP_SYS_ADMIN", ret);
-    //     return;
-    // }
-    // println!("Displaying pixels! Press Enter to quit...");
-    fill_buffer_with_random_pixels(fb, height, width, pitch_pixels);
-
-    return;
-
-    // loop {
-    //     fill_buffer_with_random_pixels(fb, height, width, pitch_pixels);
-    //     sleep(time::Duration::from_secs(1));
-    // }
-
+    let ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) };
+    if ret != 0 {
+        eprintln!("SETCRTC failed (ret={}) — try running as root or with CAP_SYS_ADMIN", ret);
+        return;
+    }
+    
+    let mut frame: u32 = 0;
+    loop {
+        draw_frame(fb, height, width, pitch_pixels, frame);
+        frame = frame.wrapping_add(1);
+        sleep(time::Duration::from_secs(1));
+    }
 }
 
 unsafe fn libc_mmap(
