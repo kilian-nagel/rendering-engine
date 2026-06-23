@@ -1,5 +1,6 @@
 use core::time;
 use std::fs::OpenOptions;
+use std::io::Write;
 use std::os::unix::io::AsRawFd;
 use std::thread::sleep;
 
@@ -145,16 +146,21 @@ unsafe fn ioctl<T>(fd: i32, request: u64, arg: *mut T) -> i32 { unsafe {
 }}
 
 
-fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, _frame: u32) {
+fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, frame: u32) {
     let cx = width as i32 / 2;
     let cy = height as i32 / 2;
     let half: i32 = 100;
 
-    // Fresh random color each frame so the 60 ms refresh is obvious.
-    let r = rand::random::<u8>() as u32;
-    let g = rand::random::<u8>() as u32;
-    let b = rand::random::<u8>() as u32;
-    let square_color = (r << 16) | (g << 8) | b;
+    const PALETTE: [u32; 7] = [
+        0x00_FF_00_00, // red
+        0x00_00_FF_00, // green
+        0x00_00_00_FF, // blue
+        0x00_FF_FF_00, // yellow
+        0x00_FF_00_FF, // magenta
+        0x00_00_FF_FF, // cyan
+        0x00_FF_FF_FF, // white
+    ];
+    let square_color = PALETTE[(frame as usize) % PALETTE.len()];
 
     for y in 0..height as i32 {
         for x in 0..width as i32 {
@@ -306,9 +312,20 @@ fn main() {
         return;
     }
     
+    let mut log = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("/tmp/rendering.log")
+        .expect("cannot open /tmp/rendering.log");
+
     let mut frame: u32 = 0;
     loop {
         draw_frame(fb, height, width, pitch_pixels, frame);
+        // Re-assert our framebuffer on the CRTC every frame to avoid the fbcon or another client may to repainting over us
+        let setcrtc_ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) };
+        writeln!(log, "drew frame {} (setcrtc={})", frame, setcrtc_ret).ok();
+        log.flush().ok();
         frame = frame.wrapping_add(1);
         sleep(time::Duration::from_secs(1));
     }
