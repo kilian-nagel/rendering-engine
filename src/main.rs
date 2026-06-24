@@ -22,6 +22,10 @@ const DRM_IOCTL_MODE_CREATE_DUMB:  u64 = iowr(0xB2, std::mem::size_of::<DrmModeC
 const DRM_IOCTL_MODE_MAP_DUMB:     u64 = iowr(0xB3, std::mem::size_of::<DrmModeMapDumb>() as u64);
 const DRM_IOCTL_MODE_ADDFB:        u64 = iowr(0xAE, std::mem::size_of::<DrmModeFbCmd>() as u64);
 const DRM_IOCTL_MODE_SETCRTC:      u64 = iowr(0xA2, std::mem::size_of::<DrmModeCrtc>() as u64);
+const DRM_IOCTL_MODE_PAGE_FLIP:    u64 = iowr(0xB0, std::mem::size_of::<DrmModeCrtcPageFlip>() as u64);
+
+const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
+const DRM_EVENT_FLIP_COMPLETE:  u32 = 0x02;
 
 #[repr(C)]
 #[derive(Default)]
@@ -121,6 +125,27 @@ struct DrmModeFbCmd {
     bpp:    u32,
     depth:  u32,
     handle: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct DrmModeCrtcPageFlip {
+    crtc_id:   u32,
+    fb_id:     u32,
+    flags:     u32,
+    reserved:  u32,
+    user_data: u64,
+}
+
+#[repr(C)]
+struct DrmEventVblank {
+    kind:       u32,
+    length:     u32,
+    user_data:  u64,
+    tv_sec:     u32,
+    tv_usec:    u32,
+    sequence:   u32,
+    crtc_id:    u32,
 }
 
 #[repr(C)]
