@@ -1,6 +1,6 @@
 use core::time;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::thread::sleep;
 
@@ -171,10 +171,12 @@ unsafe fn ioctl<T>(fd: i32, request: u64, arg: *mut T) -> i32 { unsafe {
 }}
 
 
-fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, frame: u32) {
-    let cx = width as i32 / 2;
-    let cy = height as i32 / 2;
+fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, frame: u32, offset_x_var: &mut i32, offset_y_var: &mut i32) {
     let half: i32 = 100;
+
+    // Move the cube's center by the offset, clamped so it stays fully on screen.
+    let cx = (width as i32 / 2 + *offset_x_var).clamp(half, width as i32 - half);
+    let cy = (height as i32 / 2 + *offset_y_var).clamp(half, height as i32 - half);
 
     const PALETTE: [u32; 7] = [
         0x00_FF_00_00, // red
@@ -185,6 +187,7 @@ fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, 
         0x00_00_FF_FF, // cyan
         0x00_FF_FF_FF, // white
     ];
+
     let square_color = PALETTE[(frame as usize) % PALETTE.len()];
 
     for y in 0..height as i32 {
@@ -196,12 +199,74 @@ fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, 
     }
 }
 
+/// One scanout buffer: a dumb GPU buffer registered as a KMS framebuffer and
+/// mmap'd into our address space so we can draw into it from the CPU.
+struct Framebuffer {
+    fb_id:        u32,
+    ptr:          *mut u32,
+    len:          usize,
+    pitch_pixels: usize,
+}
+
+impl Framebuffer {
+    fn pixels(&mut self) -> &mut [u32] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+/// Allocate a dumb buffer, register it as a KMS framebuffer and mmap it.
+fn create_framebuffer(fd: i32, width: u32, height: u32) -> Framebuffer {
+    // Allocate the dumb buffer.
+    let mut create = DrmModeCreateDumb { width, height, bpp: 32, ..Default::default() };
+    unsafe { ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut create) };
+
+    // Register it as a KMS framebuffer.
+    let mut addfb = DrmModeFbCmd {
+        width,
+        height,
+        bpp:    32,
+        depth:  24,
+        pitch:  create.pitch,
+        handle: create.handle,
+        ..Default::default()
+    };
+    unsafe { ioctl(fd, DRM_IOCTL_MODE_ADDFB, &mut addfb) };
+
+    // Get the mmap offset and map it into our address space.
+    let mut map_dumb = DrmModeMapDumb { handle: create.handle, ..Default::default() };
+    unsafe { ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mut map_dumb) };
+
+    let fb_size = create.size as usize;
+    let fb_ptr = unsafe {
+        libc_mmap(
+            std::ptr::null_mut(),
+            fb_size,
+            0x1 | 0x2, // PROT_READ | PROT_WRITE
+            0x01,      // MAP_SHARED
+            fd,
+            map_dumb.offset as i64,
+        )
+    };
+    assert!(!fb_ptr.is_null() && fb_ptr as isize != -1, "mmap failed");
+
+    println!(
+        "Framebuffer id={} handle={} pitch={} size={}",
+        addfb.fb_id, create.handle, create.pitch, create.size
+    );
+
+    Framebuffer {
+        fb_id:        addfb.fb_id,
+        ptr:          fb_ptr as *mut u32,
+        len:          fb_size / 4,
+        pitch_pixels: create.pitch as usize / 4,
+    }
+}
 
 // ──────────────────────────────────────────────────────────
 //  Main
 // ──────────────────────────────────────────────────────────
 fn main() {
-    // 1. Open the DRM device
+    // Open the DRM device
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -209,7 +274,7 @@ fn main() {
         .expect("Cannot open /dev/dri/card1 — are you in the 'video' group?");
     let fd = file.as_raw_fd();
 
-    // 2. Get resource IDs (connectors, CRTCs …)
+    // Get resource IDs (connectors, CRTCs …)
     let mut res = DrmModeCardRes::default();
     let mut connector_ids = vec![0u32; 8];
     let mut crtc_ids      = vec![0u32; 8];
@@ -218,9 +283,10 @@ fn main() {
     res.count_connectors  = 8;
     res.count_crtcs       = 8;
     unsafe { ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &mut res) };
-    println!("connectors: {}  crtcs: {}", res.count_connectors, res.count_crtcs);
+    println!("connectors: {}  crtcs: {}, width: {}, height: {}", res.count_connectors, res.count_crtcs, res.max_width, res.max_height);
 
-    // 3. Find the first connected connector
+
+    // Find the first connected connector
     let connector_id;
     let mode: DrmModeModeinfo;
     let encoder_id;
@@ -247,6 +313,7 @@ fn main() {
             found_connector = Some((cid, modes[0], conn.encoder_id));
             break 'outer;
         }
+
         let (cid, m, enc) = found_connector.expect("No connected display found");
         connector_id = cid;
         mode         = m;
@@ -259,65 +326,23 @@ fn main() {
     println!("Mode: {}x{}@{}Hz  connector={} encoder={}",
         width, height, mode.vrefresh, connector_id, encoder_id);
 
-    // 4. Find the CRTC from the encoder
+    // Find the CRTC from the encoder
     let mut enc_info = DrmModeGetEncoder { encoder_id, ..Default::default() };
     unsafe { ioctl(fd, DRM_IOCTL_MODE_GETENCODER, &mut enc_info) };
     let crtc_id = enc_info.crtc_id;
     println!("Using CRTC id={}", crtc_id);
 
-    // 5. Allocate a dumb framebuffer
-    let mut create = DrmModeCreateDumb {
-        width,
-        height,
-        bpp: 32,
-        ..Default::default()
-    };
-    unsafe { ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut create) };
-    println!("Dumb buffer: handle={} pitch={} size={}", create.handle, create.pitch, create.size);
+    // Allocate front and back buffer
+    let mut bufs = [
+        create_framebuffer(fd, width, height),
+        create_framebuffer(fd, width, height),
+    ];
 
-    // 6. Register it as a KMS framebuffer
-    let mut addfb = DrmModeFbCmd {
-        width,
-        height,
-        bpp:    32,
-        depth:  24,
-        pitch:  create.pitch,
-        handle: create.handle,
-        ..Default::default()
-    };
-    unsafe { ioctl(fd, DRM_IOCTL_MODE_ADDFB, &mut addfb) };
-    let fb_id = addfb.fb_id;
-    println!("Framebuffer id={}", fb_id);
-
-    // 7. Get the mmap offset for the dumb buffer
-    let mut map_dumb = DrmModeMapDumb { handle: create.handle, ..Default::default() };
-    unsafe { ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mut map_dumb) };
-
-    // 8. mmap the framebuffer into our address space
-    let fb_size = create.size as usize;
-    let fb_ptr = unsafe {
-        libc_mmap(
-            std::ptr::null_mut(),
-            fb_size,
-            0x1 | 0x2,      // PROT_READ | PROT_WRITE
-            0x01,            // MAP_SHARED
-            fd,
-            map_dumb.offset as i64,
-        )
-    };
-    assert!(!fb_ptr.is_null() && fb_ptr as isize != -1, "mmap failed");
-    let fb: &mut [u32] = unsafe {
-        std::slice::from_raw_parts_mut(fb_ptr as *mut u32, fb_size / 4)
-    };
-
-    let pitch_pixels = create.pitch as usize / 4;
-
-
-    // 10. Set the CRTC to the display
+    // Intialize CRTC by making it scan front buffer
     let mut connector_id_copy = connector_id;
     let mut set_crtc = DrmModeCrtc {
         crtc_id,
-        fb_id,
+        fb_id: bufs[0].fb_id,
         x: 0,
         y: 0,
         set_connectors_ptr: &mut connector_id_copy as *mut u32 as u64,
@@ -327,16 +352,11 @@ fn main() {
         ..Default::default()
     };
 
-    println!("height : {}", height);
-    println!("width : {}", width);
-
-
     let ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) };
     if ret != 0 {
         eprintln!("SETCRTC failed (ret={}) — try running as root or with CAP_SYS_ADMIN", ret);
-        return;
     }
-    
+
     let mut log = OpenOptions::new()
         .create(true)
         .write(true)
@@ -344,15 +364,48 @@ fn main() {
         .open("/tmp/rendering.log")
         .expect("cannot open /tmp/rendering.log");
 
+    // `front` is the buffer currently on screen, we draw into the other one (back)
+    let mut front: usize = 0;
     let mut frame: u32 = 0;
+    let mut offset_x: i32 = 0;
+    let mut offset_y: i32 = 0;
     loop {
-        draw_frame(fb, height, width, pitch_pixels, frame);
-        // Re-assert our framebuffer on the CRTC every frame to avoid the fbcon or another client may to repainting over us
-        let setcrtc_ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) };
-        writeln!(log, "drew frame {} (setcrtc={})", frame, setcrtc_ret).ok();
+        let back = front ^ 1;
+
+        // Draw next frame into the back buffer.
+        let pitch_pixels = bufs[back].pitch_pixels;
+        draw_frame(bufs[back].pixels(), height, width, pitch_pixels, frame, &mut offset_x, &mut offset_y);
+        offset_x += 1;
+        offset_y += 1;
+
+        // Schedule a page flip to the back buffer
+        let mut flip = DrmModeCrtcPageFlip {
+            crtc_id,
+            fb_id: bufs[back].fb_id,
+            flags: DRM_MODE_PAGE_FLIP_EVENT,
+            ..Default::default()
+        };
+        let flip_ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flip) };
+
+        if flip_ret == 0 {
+            // Wait for page flip to occur, it will occur once vblank event is written at next VSYNC
+            let mut ev_buf = [0u8; std::mem::size_of::<DrmEventVblank>()];
+            if let Err(e) = (&file).read_exact(&mut ev_buf) {
+                writeln!(log, "reading flip event failed: {}", e).ok();
+            }
+            // The flip completed: the back buffer is now the front buffer.
+            front = back;
+        } else {
+            // Page flip failed we reassert the CRTC to still display the framebuffer
+            set_crtc.fb_id = bufs[back].fb_id;
+            let setcrtc_ret = unsafe { ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) };
+            writeln!(log, "page flip failed (ret={}), setcrtc={}", flip_ret, setcrtc_ret).ok();
+            front = back;
+        }
+
+        writeln!(log, "presented frame {} on buffer {} (flip={})", frame, back, flip_ret).ok();
         log.flush().ok();
         frame = frame.wrapping_add(1);
-        sleep(time::Duration::from_secs(1));
     }
 }
 
