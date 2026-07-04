@@ -283,8 +283,6 @@ fn main() {
     res.count_connectors  = 8;
     res.count_crtcs       = 8;
     unsafe { ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &mut res) };
-    println!("connectors: {}  crtcs: {}, width: {}, height: {}", res.count_connectors, res.count_crtcs, res.max_width, res.max_height);
-
 
     // Find the first connected connector
     let connector_id;
@@ -330,7 +328,6 @@ fn main() {
     let mut enc_info = DrmModeGetEncoder { encoder_id, ..Default::default() };
     unsafe { ioctl(fd, DRM_IOCTL_MODE_GETENCODER, &mut enc_info) };
     let crtc_id = enc_info.crtc_id;
-    println!("Using CRTC id={}", crtc_id);
 
     // Allocate front and back buffer
     let mut bufs = [
