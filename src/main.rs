@@ -262,6 +262,19 @@ fn create_framebuffer(fd: i32, width: u32, height: u32) -> Framebuffer {
     }
 }
 
+struct Rasterizer {}
+
+impl Rasterizer {
+    fn clear_screen(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize) {
+        for y in 0..height {
+            for x in 0..width {
+                let color = 0x0000_0000;
+                buffer[y as usize * pitch_pixels + x as usize] = color;
+            }
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────
 //  Main
 // ──────────────────────────────────────────────────────────
