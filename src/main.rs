@@ -262,6 +262,34 @@ fn create_framebuffer(fd: i32, width: u32, height: u32) -> Framebuffer {
     }
 }
 
+
+struct Rectangle {
+    width: u32,
+    height: u32,
+    color: u32 
+}
+
+impl Rectangle {
+    fn draw(&self, framebuffer: &mut [u32], posX: i32, posY: i32, pitch_pixels: usize) -> Result<(), &'static str>{
+        let maxPosX: i32 = pitch_pixels as i32;
+        let maxPosY: i32 = (framebuffer.len() / pitch_pixels) as i32;
+
+        if posX > maxPosX || posX + self.width as i32 > maxPosX ||
+            posY > maxPosY || posY + self.height as i32 > maxPosY {
+            return Err("PosX or PosY overflows from the buffer or the rectangle is drawn out of bounds from the framebuffer");
+        }
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let color = self.color;
+                framebuffer[y as usize * pitch_pixels + x as usize] = color;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 struct Rasterizer {}
 
 impl Rasterizer {
