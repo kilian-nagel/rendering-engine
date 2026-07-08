@@ -18,6 +18,24 @@ const fn iow(nr: u64, size: u64) -> u64 {
 const DRM_IOCTL_MODE_GETRESOURCES: u64 = iowr(0xA0, std::mem::size_of::<DrmModeCardRes>() as u64);
 const DRM_IOCTL_MODE_GETCONNECTOR: u64 = iowr(0xA7, std::mem::size_of::<DrmModeGetConnector>() as u64);
 const DRM_IOCTL_MODE_GETENCODER:   u64 = iowr(0xA6, std::mem::size_of::<DrmModeGetEncoder>() as u64);
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
+use std::os::unix::io::AsRawFd;
+
+const DRM_IOCTL_BASE: u64 = 0x64;
+
+const fn iowr(nr: u64, size: u64) -> u64 {
+    // direction = read|write = 3, size in bits [29:16], type [15:8], nr [7:0]
+    (3u64 << 30) | (size << 16) | (DRM_IOCTL_BASE << 8) | nr
+}
+
+const fn iow(nr: u64, size: u64) -> u64 {
+    (1u64 << 30) | (size << 16) | (DRM_IOCTL_BASE << 8) | nr
+}
+
+const DRM_IOCTL_MODE_GETRESOURCES: u64 = iowr(0xA0, std::mem::size_of::<DrmModeCardRes>() as u64);
+const DRM_IOCTL_MODE_GETCONNECTOR: u64 = iowr(0xA7, std::mem::size_of::<DrmModeGetConnector>() as u64);
+const DRM_IOCTL_MODE_GETENCODER:   u64 = iowr(0xA6, std::mem::size_of::<DrmModeGetEncoder>() as u64);
 const DRM_IOCTL_MODE_CREATE_DUMB:  u64 = iowr(0xB2, std::mem::size_of::<DrmModeCreateDumb>() as u64);
 const DRM_IOCTL_MODE_MAP_DUMB:     u64 = iowr(0xB3, std::mem::size_of::<DrmModeMapDumb>() as u64);
 const DRM_IOCTL_MODE_ADDFB:        u64 = iowr(0xAE, std::mem::size_of::<DrmModeFbCmd>() as u64);
@@ -262,7 +280,6 @@ fn create_framebuffer(fd: i32, width: u32, height: u32) -> Framebuffer {
     }
 }
 
-
 struct Rectangle {
     width: u32,
     height: u32,
@@ -407,14 +424,27 @@ fn main() {
     let mut frame: u32 = 0;
     let mut offset_x: i32 = 0;
     let mut offset_y: i32 = 0;
+    let mut iterations = 0;
+    
     loop {
         let back = front ^ 1;
 
         // Draw next frame into the back buffer.
+        
         let pitch_pixels = bufs[back].pitch_pixels;
-        draw_frame(bufs[back].pixels(), height, width, pitch_pixels, frame, &mut offset_x, &mut offset_y);
+
+        let rectangle = Rectangle {
+            width: 200,
+            height: 200,
+            color: 0x00_FF_00_00 
+        };
+        rectangle.draw(bufs[back].pixels(), offset_x, offset_y, pitch_pixels);
         offset_x += 1;
         offset_y += 1;
+
+        if iterations > 100 {
+            Rasterizer::clear_screen(bufs[back].pixels(), height, width, pitch_pixels);
+        }
 
         // Schedule a page flip to the back buffer
         let mut flip = DrmModeCrtcPageFlip {
@@ -440,6 +470,8 @@ fn main() {
             writeln!(log, "page flip failed (ret={}), setcrtc={}", flip_ret, setcrtc_ret).ok();
             front = back;
         }
+
+        iterations += 1;
 
         writeln!(log, "presented frame {} on buffer {} (flip={})", frame, back, flip_ret).ok();
         log.flush().ok();
