@@ -18,24 +18,6 @@ const fn iow(nr: u64, size: u64) -> u64 {
 const DRM_IOCTL_MODE_GETRESOURCES: u64 = iowr(0xA0, std::mem::size_of::<DrmModeCardRes>() as u64);
 const DRM_IOCTL_MODE_GETCONNECTOR: u64 = iowr(0xA7, std::mem::size_of::<DrmModeGetConnector>() as u64);
 const DRM_IOCTL_MODE_GETENCODER:   u64 = iowr(0xA6, std::mem::size_of::<DrmModeGetEncoder>() as u64);
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
-
-const DRM_IOCTL_BASE: u64 = 0x64;
-
-const fn iowr(nr: u64, size: u64) -> u64 {
-    // direction = read|write = 3, size in bits [29:16], type [15:8], nr [7:0]
-    (3u64 << 30) | (size << 16) | (DRM_IOCTL_BASE << 8) | nr
-}
-
-const fn iow(nr: u64, size: u64) -> u64 {
-    (1u64 << 30) | (size << 16) | (DRM_IOCTL_BASE << 8) | nr
-}
-
-const DRM_IOCTL_MODE_GETRESOURCES: u64 = iowr(0xA0, std::mem::size_of::<DrmModeCardRes>() as u64);
-const DRM_IOCTL_MODE_GETCONNECTOR: u64 = iowr(0xA7, std::mem::size_of::<DrmModeGetConnector>() as u64);
-const DRM_IOCTL_MODE_GETENCODER:   u64 = iowr(0xA6, std::mem::size_of::<DrmModeGetEncoder>() as u64);
 const DRM_IOCTL_MODE_CREATE_DUMB:  u64 = iowr(0xB2, std::mem::size_of::<DrmModeCreateDumb>() as u64);
 const DRM_IOCTL_MODE_MAP_DUMB:     u64 = iowr(0xB3, std::mem::size_of::<DrmModeMapDumb>() as u64);
 const DRM_IOCTL_MODE_ADDFB:        u64 = iowr(0xAE, std::mem::size_of::<DrmModeFbCmd>() as u64);
