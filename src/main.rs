@@ -1,310 +1,19 @@
-use core::time;
+mod drm;
+mod rasterizer;
+
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
-use std::thread::sleep;
 
-const DRM_IOCTL_BASE: u64 = 0x64;
+use drm::create_framebuffer;
+use drm::sys::{
+    ioctl, DrmEventVblank, DrmModeCardRes, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeGetConnector,
+    DrmModeGetEncoder, DrmModeModeinfo, DRM_IOCTL_MODE_GETCONNECTOR, DRM_IOCTL_MODE_GETENCODER,
+    DRM_IOCTL_MODE_GETRESOURCES, DRM_IOCTL_MODE_PAGE_FLIP, DRM_IOCTL_MODE_SETCRTC,
+    DRM_MODE_PAGE_FLIP_EVENT,
+};
+use rasterizer::{Rasterizer, Rectangle};
 
-const fn iowr(nr: u64, size: u64) -> u64 {
-    // direction = read|write = 3, size in bits [29:16], type [15:8], nr [7:0]
-    (3u64 << 30) | (size << 16) | (DRM_IOCTL_BASE << 8) | nr
-}
-
-const fn iow(nr: u64, size: u64) -> u64 {
-    (1u64 << 30) | (size << 16) | (DRM_IOCTL_BASE << 8) | nr
-}
-
-const DRM_IOCTL_MODE_GETRESOURCES: u64 = iowr(0xA0, std::mem::size_of::<DrmModeCardRes>() as u64);
-const DRM_IOCTL_MODE_GETCONNECTOR: u64 = iowr(0xA7, std::mem::size_of::<DrmModeGetConnector>() as u64);
-const DRM_IOCTL_MODE_GETENCODER:   u64 = iowr(0xA6, std::mem::size_of::<DrmModeGetEncoder>() as u64);
-const DRM_IOCTL_MODE_CREATE_DUMB:  u64 = iowr(0xB2, std::mem::size_of::<DrmModeCreateDumb>() as u64);
-const DRM_IOCTL_MODE_MAP_DUMB:     u64 = iowr(0xB3, std::mem::size_of::<DrmModeMapDumb>() as u64);
-const DRM_IOCTL_MODE_ADDFB:        u64 = iowr(0xAE, std::mem::size_of::<DrmModeFbCmd>() as u64);
-const DRM_IOCTL_MODE_SETCRTC:      u64 = iowr(0xA2, std::mem::size_of::<DrmModeCrtc>() as u64);
-const DRM_IOCTL_MODE_PAGE_FLIP:    u64 = iowr(0xB0, std::mem::size_of::<DrmModeCrtcPageFlip>() as u64);
-
-const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
-const DRM_EVENT_FLIP_COMPLETE:  u32 = 0x02;
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeCardRes {
-    fb_id_ptr:        u64,
-    crtc_id_ptr:      u64,
-    connector_id_ptr: u64,
-    encoder_id_ptr:   u64,
-    count_fbs:        u32,
-    count_crtcs:      u32,
-    count_connectors: u32,
-    count_encoders:   u32,
-    min_width:        u32,
-    max_width:        u32,
-    min_height:       u32,
-    max_height:       u32,
-}
-
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-struct DrmModeModeinfo {
-    clock:       u32,
-    hdisplay:    u16,
-    hsync_start: u16,
-    hsync_end:   u16,
-    htotal:      u16,
-    hskew:       u16,
-    vdisplay:    u16,
-    vsync_start: u16,
-    vsync_end:   u16,
-    vtotal:      u16,
-    vscan:       u16,
-    vrefresh:    u32,
-    flags:       u32,
-    kind:        u32,          
-    name:        [u8; 32],
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeGetConnector {
-    encoders_ptr:   u64,
-    modes_ptr:      u64,
-    props_ptr:      u64,
-    prop_values_ptr:u64,
-    count_modes:    u32,
-    count_props:    u32,
-    count_encoders: u32,
-    encoder_id:     u32,   // current encoder
-    connector_id:   u32,
-    connector_type: u32,
-    connector_type_id: u32,
-    connection:     u32,   // 1 = connected
-    mm_width:       u32,
-    mm_height:      u32,
-    subpixel:       u32,
-    pad:            u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeGetEncoder {
-    encoder_id:   u32,
-    encoder_type: u32,
-    crtc_id:      u32,
-    possible_crtcs:  u32,
-    possible_clones: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeCreateDumb {
-    height: u32,
-    width:  u32,
-    bpp:    u32,
-    flags:  u32,
-    handle: u32,
-    pitch:  u32,
-    size:   u64,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeMapDumb {
-    handle: u32,
-    pad:    u32,
-    offset: u64,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeFbCmd {
-    fb_id:  u32,
-    width:  u32,
-    height: u32,
-    pitch:  u32,
-    bpp:    u32,
-    depth:  u32,
-    handle: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeCrtcPageFlip {
-    crtc_id:   u32,
-    fb_id:     u32,
-    flags:     u32,
-    reserved:  u32,
-    user_data: u64,
-}
-
-#[repr(C)]
-struct DrmEventVblank {
-    kind:       u32,
-    length:     u32,
-    user_data:  u64,
-    tv_sec:     u32,
-    tv_usec:    u32,
-    sequence:   u32,
-    crtc_id:    u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct DrmModeCrtc {
-    set_connectors_ptr: u64,
-    count_connectors:   u32,
-    crtc_id:   u32,
-    fb_id:     u32,
-    x:         u32,
-    y:         u32,
-    gamma_size:u32,
-    mode_valid:u32,
-    mode:      DrmModeModeinfo,
-}
-
-// Ioctl wrapper
-unsafe fn ioctl<T>(fd: i32, request: u64, arg: *mut T) -> i32 { unsafe {
-    unsafe extern "C" {
-        fn ioctl(fd: i32, request: u64, ...) -> i32;
-    }
-    ioctl(fd, request, arg)
-}}
-
-
-fn draw_frame(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize, frame: u32, offset_x_var: &mut i32, offset_y_var: &mut i32) {
-    let half: i32 = 100;
-
-    // Move the cube's center by the offset, clamped so it stays fully on screen.
-    let cx = (width as i32 / 2 + *offset_x_var).clamp(half, width as i32 - half);
-    let cy = (height as i32 / 2 + *offset_y_var).clamp(half, height as i32 - half);
-
-    const PALETTE: [u32; 7] = [
-        0x00_FF_00_00, // red
-        0x00_00_FF_00, // green
-        0x00_00_00_FF, // blue
-        0x00_FF_FF_00, // yellow
-        0x00_FF_00_FF, // magenta
-        0x00_00_FF_FF, // cyan
-        0x00_FF_FF_FF, // white
-    ];
-
-    let square_color = PALETTE[(frame as usize) % PALETTE.len()];
-
-    for y in 0..height as i32 {
-        for x in 0..width as i32 {
-            let inside = (x - cx).abs() < half && (y - cy).abs() < half;
-            let color = if inside { square_color } else { 0x0000_0000 };
-            buffer[y as usize * pitch_pixels + x as usize] = color;
-        }
-    }
-}
-
-/// One scanout buffer: a dumb GPU buffer registered as a KMS framebuffer and
-/// mmap'd into our address space so we can draw into it from the CPU.
-struct Framebuffer {
-    fb_id:        u32,
-    ptr:          *mut u32,
-    len:          usize,
-    pitch_pixels: usize,
-}
-
-impl Framebuffer {
-    fn pixels(&mut self) -> &mut [u32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-}
-
-/// Allocate a dumb buffer, register it as a KMS framebuffer and mmap it.
-fn create_framebuffer(fd: i32, width: u32, height: u32) -> Framebuffer {
-    // Allocate the dumb buffer.
-    let mut create = DrmModeCreateDumb { width, height, bpp: 32, ..Default::default() };
-    unsafe { ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut create) };
-
-    // Register it as a KMS framebuffer.
-    let mut addfb = DrmModeFbCmd {
-        width,
-        height,
-        bpp:    32,
-        depth:  24,
-        pitch:  create.pitch,
-        handle: create.handle,
-        ..Default::default()
-    };
-    unsafe { ioctl(fd, DRM_IOCTL_MODE_ADDFB, &mut addfb) };
-
-    // Get the mmap offset and map it into our address space.
-    let mut map_dumb = DrmModeMapDumb { handle: create.handle, ..Default::default() };
-    unsafe { ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mut map_dumb) };
-
-    let fb_size = create.size as usize;
-    let fb_ptr = unsafe {
-        libc_mmap(
-            std::ptr::null_mut(),
-            fb_size,
-            0x1 | 0x2, // PROT_READ | PROT_WRITE
-            0x01,      // MAP_SHARED
-            fd,
-            map_dumb.offset as i64,
-        )
-    };
-    assert!(!fb_ptr.is_null() && fb_ptr as isize != -1, "mmap failed");
-
-    println!(
-        "Framebuffer id={} handle={} pitch={} size={}",
-        addfb.fb_id, create.handle, create.pitch, create.size
-    );
-
-    Framebuffer {
-        fb_id:        addfb.fb_id,
-        ptr:          fb_ptr as *mut u32,
-        len:          fb_size / 4,
-        pitch_pixels: create.pitch as usize / 4,
-    }
-}
-
-struct Rectangle {
-    width: u32,
-    height: u32,
-    color: u32 
-}
-
-impl Rectangle {
-    fn draw(&self, framebuffer: &mut [u32], posX: i32, posY: i32, pitch_pixels: usize) -> Result<(), &'static str>{
-        let maxPosX: i32 = pitch_pixels as i32;
-        let maxPosY: i32 = (framebuffer.len() / pitch_pixels) as i32;
-
-        if posX > maxPosX || posX + self.width as i32 > maxPosX ||
-            posY > maxPosY || posY + self.height as i32 > maxPosY {
-            return Err("PosX or PosY overflows from the buffer or the rectangle is drawn out of bounds from the framebuffer");
-        }
-
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let color = self.color;
-                framebuffer[y as usize * pitch_pixels + x as usize] = color;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-struct Rasterizer {}
-
-impl Rasterizer {
-    fn clear_screen(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize) {
-        for y in 0..height {
-            for x in 0..width {
-                let color = 0x0000_0000;
-                buffer[y as usize * pitch_pixels + x as usize] = color;
-            }
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────
-//  Main
-// ──────────────────────────────────────────────────────────
 fn main() {
     // Open the DRM device
     let file = OpenOptions::new()
@@ -407,20 +116,21 @@ fn main() {
     let mut offset_x: i32 = 0;
     let mut offset_y: i32 = 0;
     let mut iterations = 0;
-    
+
     loop {
         let back = front ^ 1;
 
         // Draw next frame into the back buffer.
-        
         let pitch_pixels = bufs[back].pitch_pixels;
 
         let rectangle = Rectangle {
             width: 200,
             height: 200,
-            color: 0x00_FF_00_00 
+            color: 0x00_FF_00_00,
         };
-        rectangle.draw(bufs[back].pixels(), offset_x, offset_y, pitch_pixels);
+        if let Err(e) = rectangle.draw(bufs[back].pixels(), offset_x, offset_y, pitch_pixels) {
+            writeln!(log, "rectangle draw failed: {}", e).ok();
+        }
         offset_x += 1;
         offset_y += 1;
 
@@ -460,24 +170,3 @@ fn main() {
         frame = frame.wrapping_add(1);
     }
 }
-
-unsafe fn libc_mmap(
-    addr:   *mut std::ffi::c_void,
-    length: usize,
-    prot:   i32,
-    flags:  i32,
-    fd:     i32,
-    offset: i64,
-) -> *mut std::ffi::c_void { unsafe {
-    unsafe extern "C" {
-        fn mmap(
-            addr:   *mut std::ffi::c_void,
-            length: usize,
-            prot:   i32,
-            flags:  i32,
-            fd:     i32,
-            offset: i64,
-        ) -> *mut std::ffi::c_void;
-    }
-    mmap(addr, length, prot, flags, fd, offset)
-}}
