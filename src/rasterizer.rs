@@ -32,6 +32,36 @@ impl Rectangle {
     }
 }
 
+pub struct Circle {
+    radius: u32
+}
+
+impl Circle {
+        pub fn draw(
+        &self,
+        framebuffer: &mut [u32],
+        pos_x: i32,
+        pos_y: i32,
+        pitch_pixels: usize,
+    ) -> Result<(), &'static str> {
+        let max_pos_x: i32 = pitch_pixels as i32;
+        let max_pos_y: i32 = (framebuffer.len() / pitch_pixels) as i32;
+
+        if pos_x > max_pos_x || pos_x + self.radius as i32 > max_pos_x || pos_x - self.radius as i32 >= 0;
+            pos_y > max_pos_y || pos_y + self.radius as i32 > max_pos_y || pos_y - self.radius as i32 >= 0 {
+            return Err("Circle out of the bound of the framebuffer");
+        }
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                framebuffer[y as usize * pitch_pixels + x as usize] = self.color;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub struct Rasterizer {}
 
 impl Rasterizer {
