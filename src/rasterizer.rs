@@ -1,9 +1,31 @@
 //! CPU-side software rasterizing primitives that draw directly into a framebuffer's pixel slice.
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Color {
+    Black,
+    White,
+    Red,
+    Green,
+    Blue,
+}
+
+impl Color {
+    // 0x00RRGGBB
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Color::Black => 0x0000_0000,
+            Color::White => 0x00FF_FFFF,
+            Color::Red   => 0x00FF_0000,
+            Color::Green => 0x0000_FF00,
+            Color::Blue  => 0x0000_00FF,
+        }
+    }
+}
+
 pub struct Rectangle {
     pub width:  u32,
     pub height: u32,
-    pub color:  u32,
+    pub color:  Color,
 }
 
 impl Rectangle {
@@ -24,7 +46,7 @@ impl Rectangle {
 
         for y in 0..self.height {
             for x in 0..self.width {
-                framebuffer[y as usize * pitch_pixels + x as usize] = self.color;
+                framebuffer[y as usize * pitch_pixels + x as usize] = self.color.to_u32();
             }
         }
 
@@ -34,7 +56,7 @@ impl Rectangle {
 
 pub struct Circle {
     pub radius: u32,
-    pub color:  u32,
+    pub color:  Color,
 }
 
 impl Circle {
@@ -61,7 +83,7 @@ impl Circle {
                 if dx * dx + dy * dy <= r2 {
                     let x = (pos_x + dx) as usize;
                     let y = (pos_y + dy) as usize;
-                    framebuffer[y * pitch_pixels + x] = self.color;
+                    framebuffer[y * pitch_pixels + x] = self.color.to_u32();
                 }
             }
         }
@@ -76,7 +98,7 @@ impl Rasterizer {
     pub fn clear_screen(buffer: &mut [u32], height: u32, width: u32, pitch_pixels: usize) {
         for y in 0..height {
             for x in 0..width {
-                buffer[y as usize * pitch_pixels + x as usize] = 0x0000_0000;
+                buffer[y as usize * pitch_pixels + x as usize] = Color::Black.to_u32();
             }
         }
     }

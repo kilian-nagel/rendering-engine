@@ -12,7 +12,7 @@ use drm::sys::{
     DRM_IOCTL_MODE_GETRESOURCES, DRM_IOCTL_MODE_PAGE_FLIP, DRM_IOCTL_MODE_SETCRTC,
     DRM_MODE_PAGE_FLIP_EVENT,
 };
-use rasterizer::{Rasterizer, Rectangle};
+use rasterizer::{Color, Rasterizer, Rectangle};
 
 fn main() {
     // Open the DRM device
@@ -126,7 +126,7 @@ fn main() {
         let rectangle = Rectangle {
             width: 200,
             height: 200,
-            color: 0x00_FF_00_00,
+            color: Color::Red,
         };
         if let Err(e) = rectangle.draw(bufs[back].pixels(), offset_x, offset_y, pitch_pixels) {
             writeln!(log, "rectangle draw failed: {}", e).ok();
