@@ -33,11 +33,12 @@ impl Rectangle {
 }
 
 pub struct Circle {
-    radius: u32
+    pub radius: u32,
+    pub color:  u32,
 }
 
 impl Circle {
-        pub fn draw(
+    pub fn draw(
         &self,
         framebuffer: &mut [u32],
         pos_x: i32,
@@ -46,15 +47,22 @@ impl Circle {
     ) -> Result<(), &'static str> {
         let max_pos_x: i32 = pitch_pixels as i32;
         let max_pos_y: i32 = (framebuffer.len() / pitch_pixels) as i32;
+        let r = self.radius as i32;
 
-        if pos_x > max_pos_x || pos_x + self.radius as i32 > max_pos_x || pos_x - self.radius as i32 >= 0;
-            pos_y > max_pos_y || pos_y + self.radius as i32 > max_pos_y || pos_y - self.radius as i32 >= 0 {
-            return Err("Circle out of the bound of the framebuffer");
+        // Reject if the circle's bounding box leaves the framebuffer.
+        if pos_x - r < 0 || pos_x + r >= max_pos_x || pos_y - r < 0 || pos_y + r >= max_pos_y {
+            return Err("Circle out of the bounds of the framebuffer");
         }
 
-        for y in 0..self.height {
-            for x in 0..self.width {
-                framebuffer[y as usize * pitch_pixels + x as usize] = self.color;
+        let r2 = r * r;
+
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy <= r2 {
+                    let x = (pos_x + dx) as usize;
+                    let y = (pos_y + dy) as usize;
+                    framebuffer[y * pitch_pixels + x] = self.color;
+                }
             }
         }
 
