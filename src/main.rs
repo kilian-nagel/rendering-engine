@@ -12,7 +12,7 @@ use drm::sys::{
     DRM_IOCTL_MODE_GETRESOURCES, DRM_IOCTL_MODE_PAGE_FLIP, DRM_IOCTL_MODE_SETCRTC,
     DRM_MODE_PAGE_FLIP_EVENT,
 };
-use rasterizer::{Color, Rasterizer, Rectangle};
+use rasterizer::{Color, Rasterizer, Rectangle, Triangle};
 
 fn main() {
     // Open the DRM device
@@ -115,7 +115,6 @@ fn main() {
     let mut frame: u32 = 0;
     let mut offset_x: i32 = 0;
     let mut offset_y: i32 = 0;
-    let mut iterations = 0;
 
     loop {
         let back = front ^ 1;
@@ -131,11 +130,15 @@ fn main() {
         if let Err(e) = rectangle.draw(bufs[back].pixels(), offset_x, offset_y, pitch_pixels) {
             writeln!(log, "rectangle draw failed: {}", e).ok();
         }
-        offset_x += 1;
-        offset_y += 1;
 
-        if iterations > 100 {
-            Rasterizer::clear_screen(bufs[back].pixels(), height, width, pitch_pixels);
+        let triangle = Triangle {
+            p1: [100, 250],
+            p2: [0, 450],
+            p3: [200, 450],
+            color: Color::Green,
+        };
+        if let Err(e) = triangle.draw(bufs[back].pixels(), offset_x, offset_y, pitch_pixels) {
+            writeln!(log, "triangle draw failed: {}", e).ok();
         }
 
         // Schedule a page flip to the back buffer
@@ -162,8 +165,6 @@ fn main() {
             writeln!(log, "page flip failed (ret={}), setcrtc={}", flip_ret, setcrtc_ret).ok();
             front = back;
         }
-
-        iterations += 1;
 
         writeln!(log, "presented frame {} on buffer {} (flip={})", frame, back, flip_ret).ok();
         log.flush().ok();
